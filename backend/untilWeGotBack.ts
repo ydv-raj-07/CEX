@@ -6,27 +6,35 @@ const subscriberClient = await createClient({
 .on("error", (err) => console.log("Redis Client Error", err))
 .connect();
 
-
-let pendingResolves = {};
-
-interface pendingResolve {
-  
+interface filledQty{
+  filledQty: number;
 }
 
+interface pendingResolvesType {
+  [identifier: number]: (data: filledQty) => void;
+}
 
+let pendingResolves: pendingResolvesType = {};
 
-while(1){
+async function pollQueue(){
   const response = await subscriberClient.brPop("order_filled",1);
-  if(!response) continue;
-  const parsedResponse = JSON.parse(response.element);
-  if(parsedResponse && pendingResolves[parsedResponse.identifier]){
-    pendingResolves[parsedResponse.identifier]({filledQty:parsedResponse.filledQTY});
+  if(!response){
+    pollQueue();
+  }
+  else{
+    const parsedResponse = JSON.parse(response.element);
+    const fn = pendingResolves[parsedResponse.identifier];
+    if(parsedResponse && fn){
+      fn({filledQty:parsedResponse.filledQTY});
+    }
+    pollQueue();
   }
 }
 
+pollQueue();
 
 export async function untilWeGotBack(identifier: number){ 
-  return new Promise(resolve,reject)=>{
+  return new Promise<filledQty>((resolve,reject)=>{
     pendingResolves[identifier] = resolve;
-  }
+  });
 }
