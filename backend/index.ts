@@ -5,7 +5,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import authmiddleware from "./authmiddleware";
 import { createClient } from "redis";
-import { untilWeGotBack } from "./untilWeGotBack";
+import { untilWeGotBack,QueueId } from "./untilWeGotBack";
 
 const client = await createClient({
   url: Bun.env.REDIS_URL,
@@ -22,9 +22,6 @@ const prisma = new PrismaClient({ adapter });
 
 const app = express();
 app.use(express.json());
-
-const BALANCES = {};
-const ORDERBOOKS = [];
 
 app.post("/signup", async function (req, res) {
   const username = req.body?.username;
@@ -113,7 +110,8 @@ app.post("/order",authmiddleware, async function (req: AuthenticatedRequest, res
     market_id,
     symbol,
     userId,
-    identifier
+    identifier,
+    QueueId: QueueId
   }));  
   
   const returnedData = await untilWeGotBack(identifier);
@@ -126,73 +124,47 @@ app.post("/order",authmiddleware, async function (req: AuthenticatedRequest, res
 
 // returns the status of an order (partially filled, success, cancelled)
 // also returns the individual fills of this order
-app.get("/order/:orderId",authmiddleware, function (req : AuthenticatedRequest, res) {
+app.get("/order/:orderId",authmiddleware, async function (req : AuthenticatedRequest, res) {
   const userId = req.userId;
   const orderId = req.params.orderId;
-  if (!orderId) {
-    res.status(400).json({ error: "Order ID is required" });
-    return;
-  }
-  const order = ORDERBOOKS.find((o) => o.id === orderId);
-  if (!order) {
-    res.status(404).json({ error: "Order not found" });
-    return;
-  }
-  if (order.userId !== userId) {
-    res.status(403).json({ error: "Unauthorized access to this order" });
-    return;
-  }
+  let identifier = Math.random();
+  client.lPush("new_order", JSON.stringify({
+    msgtype: "get_orders",
+    orderId,
+    userId,
+    identifier,
+    QueueId,
+  })
+  );
+  const data = await untilWeGotBack(identifier);
   res.json({
-    orderId: order.id,
-    filledQty: order.filledQty,
-    totalPrice: order.totalPrice,
-    status: order.status,
-    fills: order.fills,
+    message: "Order details fetched successfully",
+    data,
   });
 });
 
-app.delete("/order/:orderId",authmiddleware, function (req : AuthenticatedRequest, res) {});
+app.get("/order/:orderId",authmiddleware, function (req : AuthenticatedRequest, res) {});
 
 // app.get("/depth/:symbol", function (req, res) {
 //   res.json({ depth: ORDERBOOKS[req.params.symbol] });
 // });
 
-app.get("/orders",authmiddleware, function (req : AuthenticatedRequest, res) {
-  const userId = req.userId;
-  const userOrders = ORDERBOOKS.filter((o) => o.userId === userId);
-  res.json({ orders: userOrders });
+app.delete("/order/:orderId",authmiddleware, function (req : AuthenticatedRequest, res) {
+  
+});
+
+app.get("order/open",authmiddleware, function (req : AuthenticatedRequest, res) {
 });
 
 app.get("/fills",authmiddleware, function (req : AuthenticatedRequest, res) {
 });
 
+
 app.get("/balance/usd",authmiddleware, function (req : AuthenticatedRequest, res) {
-  const userId = req.userId;
-  if (!userId) {
-    res.status(400).json({ error: "User ID is required" });
-    return;
-  }
-  const balance = BALANCES[userId]?.usd || 0;
-  if (balance === undefined) {
-    res.status(404).json({ error: "Balance not found for user" });
-    return;
-  }
-  res.json({ usdBalance: balance });
 });
 
 // Returns the balance of all stocks
 app.get("/balance",authmiddleware, function (req : AuthenticatedRequest, res) {
-  const userId = req.userId;
-  if (!userId) {
-    res.status(400).json({ error: "User ID is required" });
-    return;
-  }
-  const stockBalance = BALANCES[userId]?.stocks || {};
-  if (stockBalance === undefined) {
-    res.status(404).json({ error: "Stock balance not found for user" });
-    return;
-  }
-  res.json({ stockBalance: stockBalance });
 });
 
 app.listen(3000, function () {

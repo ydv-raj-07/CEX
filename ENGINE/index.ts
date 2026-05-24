@@ -1,29 +1,224 @@
-import {createClient} from "redis";
+import { createClient } from "redis";
 
-const BALANCES = {};
-const ORDERBOOKS = {};
+interface Order {
+  symbol: string;
+  side: "buy" | "sell";
+  price: number;
+  qty: number;
+  userId: number;
+  identifier: number;
+  QueueId: number;
+  orderId ?: string;
+}
+
+interface OrderType {
+  type: "market" | "limit";
+}
+interface msgtype {
+  msgtype:
+    | "create_order"
+    | "get_depth"
+    | "cancel_order"
+    | "get_user_balance"
+    | "get_order";
+}
+
+interface OrderBooks {
+  [symbol: string]: {
+    buy: Order[];
+    sell: Order[];
+  };
+}
+
+interface Balances {
+  [userId: number]: number;
+}
+
+const BALANCES: Balances = {};
+const ORDERBOOKS: OrderBooks = {};
 
 const client = await createClient({
   url: Bun.env.REDIS_URL,
 })
-.on("error", (err) => console.log("Redis Client Error", err))
-.connect();
+  .on("error", (err) => console.log("Redis Client Error", err))
+  .connect();
 
 const publisherClient = await createClient({
   url: Bun.env.REDIS_URL,
 })
-.on("error", (err) => console.log("Redis Client Error", err))
-.connect();
+  .on("error", (err) => console.log("Redis Client Error", err))
+  .connect();
 
+while (1) {
+  const response = await client.brPop("new_order", 1);
+  if (!response) continue;
+  const parsedResponse = JSON.parse(response.element) as Order &
+    msgtype & OrderType;
+  if (parsedResponse.msgtype === "create_order") {
+    const { symbol, side, price, qty, userId, type, identifier } =
+      parsedResponse;
 
+    if (!ORDERBOOKS[symbol]) {
+      ORDERBOOKS[symbol] = {
+        buy: [],
+        sell: [],
+      };
+    }
 
-while(1){
-  const response = await client.brPop("new_order",1);
-  if(!response) continue;
-  const parsedResponse = JSON.parse(response.element);
-  if(parsedResponse.type === "market"){};
-  if(parsedResponse.type === "limit"){};
-  const filledQTY = 10;
-  const identifier = parsedResponse.identifier;
-  await publisherClient.lPush("order_filled", JSON.stringify({identifier, filledQTY}));
+    // Opposite side
+    let oppSide: "buy" | "sell";
+    if (side === "buy") oppSide = "sell";
+    else oppSide = "buy";
+    const oppOrder = ORDERBOOKS[symbol][oppSide];
+
+    // sort the opposite order book chipest seller first and highest buyer first
+    if (oppSide === "sell") {
+      oppOrder.sort((a, b) => a.price - b.price);
+    } else {
+      oppOrder.sort((a, b) => b.price - a.price);
+    }
+
+    let remainingQty = qty;
+    let totalFilled = 0;
+
+    while (remainingQty > 0 && oppOrder.length > 0) {
+      const best = oppOrder[0];
+
+      if (!best) break;
+
+      // price check
+      let priceMatch = false;
+      if (type === "market") {
+        priceMatch = true;
+      } else if (side === "buy" && price >= best.price) {
+        priceMatch = true;
+      } else if (side === "sell" && price <= best.price) {
+        priceMatch = true;
+      }
+
+      if (!priceMatch) {
+        break;
+      }
+
+      // how much qty can we fill from the best order
+      const filledQty = Math.min(remainingQty, best.qty);
+      totalFilled += filledQty;
+      remainingQty -= filledQty;
+      best.qty -= filledQty;
+
+      await publisherClient.lPush(
+        "order_filled" + best.QueueId,
+        JSON.stringify({
+          identifier: best.identifier,
+          filledQTY: filledQty,
+        }),
+      );
+
+      if (best.qty === 0) {
+        oppOrder.shift();
+      }
+    }
+
+    if (totalFilled > 0) {
+      // update balance of the user and the opposite user
+      // send the filled qty back to the user through redis pub/sub or any other method
+      await publisherClient.lPush(
+        "order_filled" + parsedResponse.QueueId,
+        JSON.stringify({
+          identifier,
+          filledQTY: totalFilled,
+        }),
+      );
+    }
+
+    if (remainingQty > 0 && type === "limit") {
+      // add the remaining order to the order book
+      const unfilledOrder = {
+        symbol,
+        side,
+        price,
+        qty: remainingQty,
+        userId,
+        identifier,
+        QueueId: parsedResponse.QueueId,
+      };
+      ORDERBOOKS[symbol][side].push(unfilledOrder);
+      if (side === "buy") {
+        ORDERBOOKS[symbol][side].sort((a, b) => b.price - a.price);
+      } else {
+        ORDERBOOKS[symbol][side].sort((a, b) => a.price - b.price);
+      }
+    }
+  }
+  if (parsedResponse.msgtype === "get_depth") {
+    const symbol = parsedResponse.symbol;
+    if (!ORDERBOOKS[symbol]) {
+      ORDERBOOKS[symbol] = {
+        buy: [],
+        sell: [],
+      };
+    }
+    const depth = ORDERBOOKS[symbol];
+    await publisherClient.lPush(
+      "order_filled" + parsedResponse.QueueId,
+      JSON.stringify({
+        identifier: parsedResponse.identifier,
+        buy: depth.buy,
+        sell: depth.sell,
+      }),
+    );
+  }
+  if (parsedResponse.msgtype === "cancel_order") {
+    const { symbol, side, identifier,QueueId } = parsedResponse;
+    if (!ORDERBOOKS[symbol]) {
+      ORDERBOOKS[symbol] = {
+        buy: [],
+        sell: [],
+      };
+    }
+    const book = ORDERBOOKS[symbol][side];
+    const index = book.findIndex((o) => o.identifier === identifier);
+    if (index !== -1) {
+      book.splice(index, 1);
+    }
+    await publisherClient.lPush(
+      "order_filled" + QueueId,
+      JSON.stringify({
+        identifier,
+        cancelled: true,
+      }),
+    );
+  }
+  if (parsedResponse.msgtype === "get_user_balance") {
+    const userId = parsedResponse.userId;
+    const balance = BALANCES[userId];
+    await publisherClient.lPush(
+      "order_filled" + parsedResponse.QueueId,
+      JSON.stringify({
+        identifier: parsedResponse.identifier,
+        balance,
+      }),
+    );
+  }
+  if (parsedResponse.msgtype === "get_order") {
+    const {orderId,userId,symbol,QueueId} = parsedResponse;
+    if(!ORDERBOOKS[symbol]){
+      ORDERBOOKS[symbol] = {
+        buy: [],
+        sell: [],
+      };
+    }
+    let orders = [
+      ORDERBOOKS[symbol].buy.find((o) => o.orderId === orderId),
+      ORDERBOOKS[symbol].sell.find((o) => o.orderId === orderId),
+    ];
+    await publisherClient.lPush(
+      "order_filled" + QueueId,
+      JSON.stringify({
+        identifier: parsedResponse.identifier,
+        orders,
+      }),
+    );
+  }
+
 }

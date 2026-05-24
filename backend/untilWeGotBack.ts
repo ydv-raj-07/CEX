@@ -1,4 +1,5 @@
 import { createClient } from "redis";
+export const QueueId = Math.random();
 
 const subscriberClient = await createClient({
   url: Bun.env.REDIS_URL,
@@ -17,7 +18,7 @@ interface pendingResolvesType {
 let pendingResolves: pendingResolvesType = {};
 
 async function pollQueue(){
-  const response = await subscriberClient.brPop("order_filled",1);
+  const response = await subscriberClient.brPop("order_filled"+QueueId,1);
   if(!response){
     pollQueue();
   }
