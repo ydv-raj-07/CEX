@@ -1,5 +1,5 @@
 import express from "express";
-import { PrismaClient } from "./generated/prisma/client";
+import { PrismaClient } from "shared/generated/prisma/client";
 import { PrismaNeon } from "@prisma/adapter-neon";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";

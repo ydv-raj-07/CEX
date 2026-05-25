@@ -1,4 +1,10 @@
 import { createClient } from "redis";
+import "dotenv/config";
+import { Prisma, PrismaClient } from "shared/generated/prisma/client";
+import { PrismaNeon } from "@prisma/adapter-neon";
+
+const adapter = new PrismaNeon({ connectionString: Bun.env.DATABASE_URL! });
+const prisma = new PrismaClient({adapter});
 
 interface Order {
   symbol: string;
@@ -49,11 +55,23 @@ const publisherClient = await createClient({
   .on("error", (err) => console.log("Redis Client Error", err))
   .connect();
 
+const ORDERS : Prisma.OrderCreateManyInput[] = [];
+const FILLS : Prisma.FillCreateManyInput[] = []
+
+setInterval(async() => {
+  if(ORDERS.length === 0 && FILLS.length === 0) return;
+  await prisma.order.createMany({data:ORDERS,skipDuplicates:true});
+  await prisma.fill.createMany({data:FILLS,skipDuplicates:true});
+  ORDERS.length = 0;
+  FILLS.length = 0;
+},60*1000)
+
 while (1) {
   const response = await client.brPop("new_order", 1);
   if (!response) continue;
   const parsedResponse = JSON.parse(response.element) as Order &
     msgtype & OrderType;
+
   if (parsedResponse.msgtype === "create_order") {
     const { symbol, side, price, qty, userId, type, identifier } =
       parsedResponse;

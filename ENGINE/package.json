@@ -10,6 +10,8 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "redis": "^5.12.1"
+    "@prisma/adapter-neon": "^7.8.0",
+    "redis": "^5.12.1",
+    "shared": "../shared"
   }
 }
