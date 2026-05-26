@@ -63,7 +63,7 @@ setInterval(async () => {
   await prisma.fill.createMany({ data: FILLS, skipDuplicates: true });
   ORDERS.length = 0;
   FILLS.length = 0;
-}, 60 * 1000);
+}, 1000);
 
 while (1) {
   const response = await client.brPop("new_order", 1);
