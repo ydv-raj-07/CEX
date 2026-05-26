@@ -73,7 +73,7 @@ while (1) {
     OrderType;
 
   if (parsedResponse.msgtype === "create_order") {
-    const { symbol, side, price, qty, userId, type, identifier } =
+    const { symbol, side, price, qty, userId, type, identifier,orderId } =
       parsedResponse;
 
     if (!ORDERBOOKS[symbol]) {
@@ -179,6 +179,7 @@ while (1) {
         qty: remainingQty,
         userId,
         identifier,
+        orderId: parsedResponse.orderId,
         QueueId: parsedResponse.QueueId,
       };
       ORDERBOOKS[symbol][side].push(unfilledOrder);
