@@ -1,10 +1,9 @@
 import { createClient } from "redis";
-import "dotenv/config";
 import { Prisma, PrismaClient } from "shared/generated/prisma/client";
 import { PrismaNeon } from "@prisma/adapter-neon";
 
 const adapter = new PrismaNeon({ connectionString: Bun.env.DATABASE_URL! });
-const prisma = new PrismaClient({adapter});
+const prisma = new PrismaClient({ adapter });
 
 interface Order {
   symbol: string;
@@ -14,7 +13,7 @@ interface Order {
   userId: number;
   identifier: number;
   QueueId: number;
-  orderId ?: string;
+  orderId?: string;
 }
 
 interface OrderType {
@@ -55,22 +54,23 @@ const publisherClient = await createClient({
   .on("error", (err) => console.log("Redis Client Error", err))
   .connect();
 
-const ORDERS : Prisma.OrderCreateManyInput[] = [];
-const FILLS : Prisma.FillCreateManyInput[] = []
+const ORDERS: Prisma.OrderCreateManyInput[] = [];
+const FILLS: Prisma.FillCreateManyInput[] = [];
 
-setInterval(async() => {
-  if(ORDERS.length === 0 && FILLS.length === 0) return;
-  await prisma.order.createMany({data:ORDERS,skipDuplicates:true});
-  await prisma.fill.createMany({data:FILLS,skipDuplicates:true});
+setInterval(async () => {
+  if (ORDERS.length === 0 && FILLS.length === 0) return;
+  await prisma.order.createMany({ data: ORDERS, skipDuplicates: true });
+  await prisma.fill.createMany({ data: FILLS, skipDuplicates: true });
   ORDERS.length = 0;
   FILLS.length = 0;
-},60*1000)
+}, 60 * 1000);
 
 while (1) {
   const response = await client.brPop("new_order", 1);
   if (!response) continue;
   const parsedResponse = JSON.parse(response.element) as Order &
-    msgtype & OrderType;
+    msgtype &
+    OrderType;
 
   if (parsedResponse.msgtype === "create_order") {
     const { symbol, side, price, qty, userId, type, identifier } =
@@ -124,6 +124,16 @@ while (1) {
       remainingQty -= filledQty;
       best.qty -= filledQty;
 
+      FILLS.push({
+        qty: filledQty,
+        price: best.price,
+        side: best.side,
+        userId: Number(best.userId),
+        asset: symbol,
+        originalOrderId: Number(best.orderId ?? 0),
+        type: type,
+      });
+
       await publisherClient.lPush(
         "order_filled" + best.QueueId,
         JSON.stringify({
@@ -140,14 +150,25 @@ while (1) {
     if (totalFilled > 0) {
       // update balance of the user and the opposite user
       // send the filled qty back to the user through redis pub/sub or any other method
-      await publisherClient.lPush(
-        "order_filled" + parsedResponse.QueueId,
-        JSON.stringify({
-          identifier,
-          filledQTY: totalFilled,
-        }),
-      );
+      ORDERS.push({
+        userId: Number(userId),
+        market:symbol,
+        price,
+        qty,
+        filledQty: totalFilled,
+        side,
+        type: type,
+        status: totalFilled === qty ? "filled" : "partially_filled",
+      });
     }
+
+    await publisherClient.lPush(
+      "order_filled" + parsedResponse.QueueId,
+      JSON.stringify({
+        identifier,
+        filledQTY: totalFilled,
+      }),
+    );
 
     if (remainingQty > 0 && type === "limit") {
       // add the remaining order to the order book
@@ -187,7 +208,7 @@ while (1) {
     );
   }
   if (parsedResponse.msgtype === "cancel_order") {
-    const { symbol, side, identifier,QueueId } = parsedResponse;
+    const { symbol, side, identifier, QueueId } = parsedResponse;
     if (!ORDERBOOKS[symbol]) {
       ORDERBOOKS[symbol] = {
         buy: [],
@@ -219,8 +240,8 @@ while (1) {
     );
   }
   if (parsedResponse.msgtype === "get_order") {
-    const {orderId,userId,symbol,QueueId} = parsedResponse;
-    if(!ORDERBOOKS[symbol]){
+    const { orderId, userId, symbol, QueueId } = parsedResponse;
+    if (!ORDERBOOKS[symbol]) {
       ORDERBOOKS[symbol] = {
         buy: [],
         sell: [],
@@ -238,5 +259,4 @@ while (1) {
       }),
     );
   }
-
 }
