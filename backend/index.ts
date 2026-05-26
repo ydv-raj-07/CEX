@@ -7,6 +7,8 @@ import authmiddleware from "./authmiddleware";
 import { createClient } from "redis";
 import { untilWeGotBack,QueueId } from "./untilWeGotBack";
 
+console.log("REDIS_URL:", Bun.env.REDIS_URL);
+
 const client = await createClient({
   url: Bun.env.REDIS_URL,
 })
@@ -103,6 +105,7 @@ app.post("/order",authmiddleware, async function (req: AuthenticatedRequest, res
   const { type, price, qty, side, market_id,symbol } = req.body;
   let identifier = Math.random();
   await client.lPush("new_order", JSON.stringify({
+    msgtype:"create_order",
     type,
     price,
     qty,
