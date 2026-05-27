@@ -1,11 +1,12 @@
 import express from "express";
-import { PrismaClient } from "shared/generated/prisma/client";
+import { PrismaClient, Role } from "shared/generated/prisma/client";
 import { PrismaNeon } from "@prisma/adapter-neon";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import authmiddleware from "./authmiddleware";
 import { createClient } from "redis";
 import { untilWeGotBack,QueueId } from "./untilWeGotBack";
+import { use } from "react";
 
 console.log("REDIS_URL:", Bun.env.REDIS_URL);
 
@@ -17,6 +18,7 @@ const client = await createClient({
 
 interface AuthenticatedRequest extends express.Request {
   userId?: number;
+  userRole?: Role;
 }
 
 const adapter = new PrismaNeon({ connectionString: Bun.env.DATABASE_URL! });
@@ -48,6 +50,7 @@ app.post("/signup", async function (req, res) {
     data: {
       username: username,
       password: hassedPassword,
+      role: Role.USER,
     },
   });
 
@@ -99,8 +102,38 @@ app.post("/signin", async function (req, res) {
       }
 */
 
-
-app.post("/order",authmiddleware, async function (req: AuthenticatedRequest, res) {
+app.post("/stock",authmiddleware(Role.ADMIN), async function (req: AuthenticatedRequest, res) {
+  const userId = req.userId;
+  const userRole = req.userRole;
+  const { symbol, name } = req.body;
+    if (!symbol || !userId) {
+      res.status(400).json({ error: "Symbol and user ID are required fields." });
+      return;
+    }
+    if(userRole !== Role.ADMIN){
+      res.status(403).json({ error: "Only admins can add new stocks" });
+      return;
+    }
+    // Check if the stock already exists
+    const existingStock = await prisma.stocks.findUnique({
+      where: {
+        symbol: symbol,
+      },
+    });
+    if (existingStock) {
+      res.status(400).json({ error: "Stock with this symbol already exists" });
+      return;
+    }
+    // Create the new stock
+    const newStock = await prisma.stocks.create({
+      data: {
+        symbol: symbol,
+        name: name, // Assuming the name is the same as the symbol for simplicity
+      },
+    });
+    res.json({ message: "Stock added successfully", stock: newStock });
+});
+app.post("/order",authmiddleware(), async function (req: AuthenticatedRequest, res) {
   const userId = req.userId;
   const { type, price, qty, side, market_id,symbol } = req.body;
   let identifier = Math.random();
@@ -127,7 +160,7 @@ app.post("/order",authmiddleware, async function (req: AuthenticatedRequest, res
 
 // returns the status of an order (partially filled, success, cancelled)
 // also returns the individual fills of this order
-app.get("/order/:orderId",authmiddleware, async function (req : AuthenticatedRequest, res) {
+app.get("/order/:orderId",authmiddleware(), async function (req : AuthenticatedRequest, res) {
   const userId = req.userId;
   const orderId = req.params.orderId;
   let identifier = Math.random();
@@ -146,28 +179,28 @@ app.get("/order/:orderId",authmiddleware, async function (req : AuthenticatedReq
   });
 });
 
-app.get("/order/:orderId",authmiddleware, function (req : AuthenticatedRequest, res) {});
+app.get("/order/:orderId",authmiddleware(), function (req : AuthenticatedRequest, res) {});
 
 // app.get("/depth/:symbol", function (req, res) {
 //   res.json({ depth: ORDERBOOKS[req.params.symbol] });
 // });
 
-app.delete("/order/:orderId",authmiddleware, function (req : AuthenticatedRequest, res) {
+app.delete("/order/:orderId",authmiddleware(), function (req : AuthenticatedRequest, res) {
   
 });
 
-app.get("order/open",authmiddleware, function (req : AuthenticatedRequest, res) {
+app.get("order/open",authmiddleware(), function (req : AuthenticatedRequest, res) {
 });
 
-app.get("/fills",authmiddleware, function (req : AuthenticatedRequest, res) {
+app.get("/fills",authmiddleware(), function (req : AuthenticatedRequest, res) {
 });
 
 
-app.get("/balance/usd",authmiddleware, function (req : AuthenticatedRequest, res) {
+app.get("/balance/usd",authmiddleware() , function (req : AuthenticatedRequest, res) {
 });
 
 // Returns the balance of all stocks
-app.get("/balance",authmiddleware, function (req : AuthenticatedRequest, res) {
+app.get("/balance",authmiddleware(), function (req : AuthenticatedRequest, res) {
 });
 
 app.listen(3000, function () {

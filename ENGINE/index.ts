@@ -36,7 +36,12 @@ interface OrderBooks {
 }
 
 interface Balances {
-  [userId: number]: number;
+  [userId: number]: {
+    amount: number;
+    assets: {
+      [symbol: string]: number;
+    };
+  };
 }
 
 const BALANCES: Balances = {};
@@ -73,7 +78,7 @@ while (1) {
     OrderType;
 
   if (parsedResponse.msgtype === "create_order") {
-    const { symbol, side, price, qty, userId, type, identifier,orderId } =
+    const { symbol, side, price, qty, userId, type, identifier, orderId } =
       parsedResponse;
 
     if (!ORDERBOOKS[symbol]) {
@@ -81,6 +86,50 @@ while (1) {
         buy: [],
         sell: [],
       };
+    }
+
+    const userBalance = BALANCES[userId];
+
+    if (userBalance === undefined) {
+      continue;
+    }
+
+    userBalance.assets[symbol] ??= 0;
+
+    if(side === "buy" && type === "market"){
+      const bestsell = ORDERBOOKS[symbol]?.sell[0];
+      if(!bestsell){
+        continue;
+      }
+      const reqBalance = bestsell.price * qty;
+      if(userBalance.amount < reqBalance){
+        continue;
+      }
+    }
+
+    if(side === "sell" && type === "market"){
+      if(!userBalance.assets[symbol] || userBalance.assets[symbol] < qty){
+        continue;
+      }
+    }
+
+    if (side === "buy" && type === "limit") {
+      const reqBalance = price * qty;
+      if (userBalance.amount < reqBalance) {
+        continue;
+      }
+      userBalance.amount -= reqBalance;
+    }
+
+    if (side === "sell" && type === "limit") {
+      const reqAsset = qty;
+      if (
+        !userBalance.assets[symbol] ||
+        userBalance.assets[symbol] < reqAsset
+      ) {
+        continue;
+      }
+      userBalance.assets[symbol] -= reqAsset;
     }
 
     // Opposite side
@@ -104,6 +153,13 @@ while (1) {
 
       if (!best) break;
 
+      const bestUserBalance = BALANCES[best.userId];
+
+      if (bestUserBalance === undefined) {
+        break;
+      }
+      bestUserBalance.assets[symbol] ??= 0;
+
       // price check
       let priceMatch = false;
       if (type === "market") {
@@ -123,6 +179,24 @@ while (1) {
       totalFilled += filledQty;
       remainingQty -= filledQty;
       best.qty -= filledQty;
+
+      const tradeValue = best.price * filledQty;
+
+      if (side === "buy") {
+        if(type === "market"){
+          userBalance.amount -= tradeValue;
+        }
+        userBalance.assets[symbol] += filledQty;
+        bestUserBalance.amount += tradeValue;
+        bestUserBalance.assets[symbol] -= filledQty;
+      } else {
+        if(type === "market"){
+          userBalance.assets[symbol] -= filledQty;
+        }
+        userBalance.amount += tradeValue;
+        bestUserBalance.amount -= tradeValue;
+        bestUserBalance.assets[symbol] += filledQty;
+      }
 
       FILLS.push({
         qty: filledQty,
@@ -152,7 +226,7 @@ while (1) {
       // send the filled qty back to the user through redis pub/sub or any other method
       ORDERS.push({
         userId: Number(userId),
-        market:symbol,
+        market: symbol,
         price,
         qty,
         filledQty: totalFilled,
@@ -172,6 +246,12 @@ while (1) {
 
     if (remainingQty > 0 && type === "limit") {
       // add the remaining order to the order book
+      if(side === "buy"){
+        userBalance.amount += price*remainingQty;
+      }else{
+        userBalance.assets[symbol] += remainingQty;
+      }
+
       const unfilledOrder = {
         symbol,
         side,
