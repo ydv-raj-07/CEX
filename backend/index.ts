@@ -104,14 +104,9 @@ app.post("/signin", async function (req, res) {
 
 app.post("/stock",authmiddleware(Role.ADMIN), async function (req: AuthenticatedRequest, res) {
   const userId = req.userId;
-  const userRole = req.userRole;
   const { symbol, name } = req.body;
     if (!symbol || !userId) {
       res.status(400).json({ error: "Symbol and user ID are required fields." });
-      return;
-    }
-    if(userRole !== Role.ADMIN){
-      res.status(403).json({ error: "Only admins can add new stocks" });
       return;
     }
     // Check if the stock already exists
