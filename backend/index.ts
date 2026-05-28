@@ -102,6 +102,12 @@ app.post("/signin", async function (req, res) {
       }
 */
 
+const valid_stocks = new Set<string>();
+const stocks = await prisma.stocks.findMany();
+for(const stock of stocks){
+  valid_stocks.add(stock.symbol);
+}
+
 app.post("/stock",authmiddleware(Role.ADMIN), async function (req: AuthenticatedRequest, res) {
   const userId = req.userId;
   const { symbol, name } = req.body;
@@ -130,7 +136,15 @@ app.post("/stock",authmiddleware(Role.ADMIN), async function (req: Authenticated
 });
 app.post("/order",authmiddleware(), async function (req: AuthenticatedRequest, res) {
   const userId = req.userId;
-  const { type, price, qty, side, market_id,symbol } = req.body;
+  const { type, price, qty, side,symbol } = req.body;
+  if(!valid_stocks.has(symbol)){
+    res.status(400).json({ error: "Invalid stock symbol" });
+    return;
+  }
+  if(!type || !price || !qty || !side || !symbol){
+    res.status(400).json({ error: "All fields are required" });
+    return;
+  }
   let identifier = Math.random();
   await client.lPush("new_order", JSON.stringify({
     msgtype:"create_order",
@@ -138,7 +152,6 @@ app.post("/order",authmiddleware(), async function (req: AuthenticatedRequest, r
     price,
     qty,
     side,
-    market_id,
     symbol,
     userId,
     identifier,
@@ -159,7 +172,7 @@ app.get("/order/:orderId",authmiddleware(), async function (req : AuthenticatedR
   const userId = req.userId;
   const orderId = req.params.orderId;
   let identifier = Math.random();
-  client.lPush("new_order", JSON.stringify({
+  await client.lPush("new_order", JSON.stringify({
     msgtype: "get_orders",
     orderId,
     userId,
@@ -170,32 +183,93 @@ app.get("/order/:orderId",authmiddleware(), async function (req : AuthenticatedR
   const data = await untilWeGotBack(identifier);
   res.json({
     message: "Order details fetched successfully",
-    data,
+    data: data,
   });
 });
-
-app.get("/order/:orderId",authmiddleware(), function (req : AuthenticatedRequest, res) {});
-
 // app.get("/depth/:symbol", function (req, res) {
 //   res.json({ depth: ORDERBOOKS[req.params.symbol] });
 // });
 
 app.delete("/order/:orderId",authmiddleware(), function (req : AuthenticatedRequest, res) {
-  
+  const userId = req.userId;
+  const orderId = req.params.orderId;
+  let identifier = Math.random();
+  client.lPush("new_order", JSON.stringify({
+    msgtype: "cancel_order",
+    orderId,
+    userId,
+    identifier,
+    QueueId,
+  }));
+  res.json({
+    message: "Order cancellation requested",
+  });
 });
 
 app.get("order/open",authmiddleware(), function (req : AuthenticatedRequest, res) {
 });
 
-app.get("/fills",authmiddleware(), function (req : AuthenticatedRequest, res) {
+app.get("orders",authmiddleware(), async function (req : AuthenticatedRequest, res) {
+  const userId = req.userId;
+  const orders = await prisma.order.findMany({
+    where: {
+      userId: userId,
+    },
+  });
+  res.json({
+    message: "Orders fetched successfully",
+    orders,
+  });
+});
+
+app.get("/fills",authmiddleware(), async function (req : AuthenticatedRequest, res) {
+  const userId = req.userId;
+  const fills = await prisma.fill.findMany({
+    where: {
+      userId: userId,
+    },
+  });
+  res.json({
+    message: "Fills fetched successfully",
+    fills,
+  });
 });
 
 
-app.get("/balance/usd",authmiddleware() , function (req : AuthenticatedRequest, res) {
+app.get("/balance/usd",authmiddleware() , async function (req : AuthenticatedRequest, res) {
+  const userId = req.userId;
+  const identifier = Math.random();
+  client.lPush("new_order", JSON.stringify({
+    msgtype: "get_user_balance",
+    userId,
+    identifier,
+    QueueId,
+  }));
+  const balance = await untilWeGotBack(identifier);
+  res.json({
+    message: "Balance fetched successfully",
+    balance,
+  });
 });
 
 // Returns the balance of all stocks
-app.get("/balance",authmiddleware(), function (req : AuthenticatedRequest, res) {
+app.get("/balance",authmiddleware(), async function (req : AuthenticatedRequest, res) {
+  const userId = req.userId;
+  const balances = await prisma.userStocks.findMany({
+    where: {
+      userId: userId,
+    },
+  });
+  const usdbalance = await prisma.balance.findUnique({
+    where: {
+      userId: userId,
+    },
+  });
+  res.json({
+    message: "Stock balances and USD balance fetched successfully",
+    balances,
+    usdbalance: usdbalance?.amount || 0,
+  });
 });
 
 app.listen(3000, function () {

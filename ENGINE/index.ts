@@ -25,7 +25,7 @@ interface msgtype {
     | "get_depth"
     | "cancel_order"
     | "get_user_balance"
-    | "get_order";
+    | "get_orders";
 }
 
 interface OrderBooks {
@@ -70,6 +70,28 @@ setInterval(async () => {
   FILLS.length = 0;
 }, 1000);
 
+setInterval(async () => {
+  for (const [userId, balance] of Object.entries(BALANCES)) {
+    await prisma.balance.upsert({
+      where: { userId: Number(userId) },
+      update: { amount: balance.amount },
+      create: { userId: Number(userId), amount: balance.amount },
+    });
+    for (const [symbol, qty] of Object.entries(balance.assets)) {
+      await prisma.userStocks.upsert({
+        where: {
+          userId_symbol: {
+            userId: Number(userId),
+            symbol: symbol,
+          },
+        },
+        update: { qty: Number(qty) },
+        create: { userId: Number(userId), symbol: symbol, qty: Number(qty) },
+      });
+    }
+  }
+}, 1000);
+
 while (1) {
   const response = await client.brPop("new_order", 1);
   if (!response) continue;
@@ -91,24 +113,31 @@ while (1) {
     const userBalance = BALANCES[userId];
 
     if (userBalance === undefined) {
-      continue;
+      await publisherClient.lPush(
+        "order_filled" + parsedResponse.QueueId,
+        JSON.stringify({
+          identifier,
+          error: "User balance not found",
+        }),
+      );
+      continue
     }
 
     userBalance.assets[symbol] ??= 0;
 
-    if(side === "buy" && type === "market"){
+    if (side === "buy" && type === "market") {
       const bestsell = ORDERBOOKS[symbol]?.sell[0];
-      if(!bestsell){
+      if (!bestsell) {
         continue;
       }
       const reqBalance = bestsell.price * qty;
-      if(userBalance.amount < reqBalance){
+      if (userBalance.amount < reqBalance) {
         continue;
       }
     }
 
-    if(side === "sell" && type === "market"){
-      if(!userBalance.assets[symbol] || userBalance.assets[symbol] < qty){
+    if (side === "sell" && type === "market") {
+      if (!userBalance.assets[symbol] || userBalance.assets[symbol] < qty) {
         continue;
       }
     }
@@ -156,7 +185,8 @@ while (1) {
       const bestUserBalance = BALANCES[best.userId];
 
       if (bestUserBalance === undefined) {
-        break;
+        oppOrder.shift();
+        continue;
       }
       bestUserBalance.assets[symbol] ??= 0;
 
@@ -183,14 +213,14 @@ while (1) {
       const tradeValue = best.price * filledQty;
 
       if (side === "buy") {
-        if(type === "market"){
+        if (type === "market") {
           userBalance.amount -= tradeValue;
         }
         userBalance.assets[symbol] += filledQty;
         bestUserBalance.amount += tradeValue;
         bestUserBalance.assets[symbol] -= filledQty;
       } else {
-        if(type === "market"){
+        if (type === "market") {
           userBalance.assets[symbol] -= filledQty;
         }
         userBalance.amount += tradeValue;
@@ -226,7 +256,7 @@ while (1) {
       // send the filled qty back to the user through redis pub/sub or any other method
       ORDERS.push({
         userId: Number(userId),
-        market: symbol,
+        symbol: symbol,
         price,
         qty,
         filledQty: totalFilled,
@@ -246,9 +276,9 @@ while (1) {
 
     if (remainingQty > 0 && type === "limit") {
       // add the remaining order to the order book
-      if(side === "buy"){
-        userBalance.amount += price*remainingQty;
-      }else{
+      if (side === "buy") {
+        userBalance.amount += price * remainingQty;
+      } else {
         userBalance.assets[symbol] += remainingQty;
       }
 
@@ -289,7 +319,7 @@ while (1) {
     );
   }
   if (parsedResponse.msgtype === "cancel_order") {
-    const { symbol, side, identifier, QueueId } = parsedResponse;
+    const { symbol, side, identifier, orderId, QueueId } = parsedResponse;
     if (!ORDERBOOKS[symbol]) {
       ORDERBOOKS[symbol] = {
         buy: [],
@@ -297,8 +327,22 @@ while (1) {
       };
     }
     const book = ORDERBOOKS[symbol][side];
-    const index = book.findIndex((o) => o.identifier === identifier);
+    const index = book.findIndex((o) => o.orderId === orderId);
     if (index !== -1) {
+      const cancelOrder = book[index];
+      if(cancelOrder){
+        const userBalance = BALANCES[cancelOrder.userId];
+        if(userBalance){
+          if (side === "buy") {
+            userBalance.amount += cancelOrder.price * cancelOrder.qty;
+          } else {
+            if(userBalance.assets[symbol]=== undefined){
+              userBalance.assets[symbol] = 0;
+            }
+            userBalance.assets[symbol] += cancelOrder.qty;
+          }
+        }
+      }
       book.splice(index, 1);
     }
     await publisherClient.lPush(
@@ -320,23 +364,27 @@ while (1) {
       }),
     );
   }
-  if (parsedResponse.msgtype === "get_order") {
-    const { orderId, userId, symbol, QueueId } = parsedResponse;
+  if (parsedResponse.msgtype === "get_orders") {
+    const { orderId, symbol, QueueId } = parsedResponse;
     if (!ORDERBOOKS[symbol]) {
       ORDERBOOKS[symbol] = {
         buy: [],
         sell: [],
       };
     }
-    let orders = [
-      ORDERBOOKS[symbol].buy.find((o) => o.orderId === orderId),
-      ORDERBOOKS[symbol].sell.find((o) => o.orderId === orderId),
-    ];
+    let buyOrders = ORDERBOOKS[symbol]?.buy.find((o) => o.orderId === orderId);
+    let sellOrders = ORDERBOOKS[symbol]?.sell.find(
+      (o) => o.orderId === orderId,
+    );
+    const order = buyOrders ?? sellOrders ?? null;
     await publisherClient.lPush(
       "order_filled" + QueueId,
       JSON.stringify({
         identifier: parsedResponse.identifier,
-        orders,
+        order: order ?? null,
+        message: order
+          ? null
+          : "Order not found in order book, it might be filled or cancelled",
       }),
     );
   }

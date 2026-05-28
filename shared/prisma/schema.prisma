@@ -27,7 +27,7 @@ model User{
 model Order{
   id Int @default(autoincrement()) @id
   userId Int
-  market String
+  symbol String
   price Float
   qty Int
   type String
@@ -54,5 +54,19 @@ model Stocks{
   id Int @default(autoincrement()) @id
   symbol String @unique
   name String
+}
+
+model Balance{
+  id Int @default(autoincrement()) @id
+  userId Int @unique
+  amount Float @default(0)
+}
+
+model userStocks{
+  id Int @default(autoincrement()) @id
+  userId Int 
+  symbol String 
+  qty Int @default(0)
+  @@unique([userId, symbol])
 }
 
